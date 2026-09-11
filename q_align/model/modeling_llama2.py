@@ -35,6 +35,7 @@ from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 
 from .modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
+from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask_for_sdpa  # missing from the local copy above
 from .configuration_mplug_owl2 import LlamaConfig
 
 class MultiwayNetwork(nn.Module):
