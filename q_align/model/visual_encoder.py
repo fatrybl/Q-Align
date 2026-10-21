@@ -3,13 +3,11 @@ from typing import Any, Optional, Tuple, Union
 
 from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling, BaseModelOutputWithPastAndCrossAttentions
 from transformers.modeling_utils import PreTrainedModel
-from transformers.pytorch_utils import find_pruneable_heads_and_indices, prune_linear_layer
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint
-from icecream import ic
 
 def get_abs_pos(abs_pos, tgt_size):
     # abs_pos: L, C
@@ -337,7 +335,7 @@ class MplugOwlVisionEncoder(nn.Module):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self.config.return_dict
 
         encoder_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
@@ -412,7 +410,7 @@ class MplugOwlVisionModel(PreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self.config.return_dict
 
         if pixel_values is None:
             raise ValueError("You have to specify pixel_values")
@@ -602,27 +600,8 @@ class MplugOwlVisualAbstractorAttention(nn.Module):
         super().__init__()
         self.attention = MplugOwlVisualAbstractorMultiHeadAttention(config)
         self.output = MplugOwlVisualAbstractorCrossOutput(config)
-        self.pruned_heads = set()
         self.norm1 = nn.LayerNorm(config.hidden_size)
         self.normk = nn.LayerNorm(config.hidden_size)
-
-    def prune_heads(self, heads):
-        if len(heads) == 0:
-            return
-        heads, index = find_pruneable_heads_and_indices(
-            heads, self.attention.num_attention_heads, self.attention.attention_head_size, self.pruned_heads
-        )
-
-        # Prune linear layers
-        self.attention.query = prune_linear_layer(self.attention.query, index)
-        self.attention.key = prune_linear_layer(self.attention.key, index)
-        self.attention.value = prune_linear_layer(self.attention.value, index)
-        self.output.dense = prune_linear_layer(self.output.out_proj, index, dim=1)
-
-        # Update hyper params and store pruned heads
-        self.attention.num_attention_heads = self.attention.num_attention_heads - len(heads)
-        self.attention.all_head_size = self.attention.attention_head_size * self.attention.num_attention_heads
-        self.pruned_heads = self.pruned_heads.union(heads)
 
     def forward(
         self,
@@ -767,13 +746,39 @@ class MplugOwlVisualAbstractorModel(PreTrainedModel):
 
         self.post_init()
 
-    def _prune_heads(self, heads_to_prune):
-        """
-        Prunes heads of the model. heads_to_prune: dict of {layer_num: list of heads to prune in this layer} See base
-        class PreTrainedModel
-        """
-        for layer, heads in heads_to_prune.items():
-            self.encoder.layer[layer].attention.prune_heads(heads)
+    # The attention-mask helpers of transformers 4.36.1's ModuleUtilsMixin, which the release ran
+    # with and transformers 5 removed from PreTrainedModel; the arithmetic is unchanged.
+    def invert_attention_mask(self, encoder_attention_mask):
+        """Turn a mask of ones (attend) and zeros (ignore) into an additive one, ``(1 - m) * min``."""
+        if encoder_attention_mask.dim() == 3:
+            encoder_extended_attention_mask = encoder_attention_mask[:, None, :, :]
+        if encoder_attention_mask.dim() == 2:
+            encoder_extended_attention_mask = encoder_attention_mask[:, None, None, :]
+        encoder_extended_attention_mask = encoder_extended_attention_mask.to(dtype=self.dtype)  # fp16 compatibility
+        encoder_extended_attention_mask = (1.0 - encoder_extended_attention_mask) * torch.finfo(self.dtype).min
+        return encoder_extended_attention_mask
+
+    def get_head_mask(self, head_mask, num_hidden_layers, is_attention_chunked=False):
+        """The head mask of every layer, ``[layers x batch x heads x seq x seq]``, or ``None`` per layer."""
+        if head_mask is not None:
+            head_mask = self._convert_head_mask_to_5d(head_mask, num_hidden_layers)
+            if is_attention_chunked is True:
+                head_mask = head_mask.unsqueeze(-1)
+        else:
+            head_mask = [None] * num_hidden_layers
+        return head_mask
+
+    def _convert_head_mask_to_5d(self, head_mask, num_hidden_layers):
+        """-> [num_hidden_layers x batch x num_heads x seq_length x seq_length]"""
+        if head_mask.dim() == 1:
+            head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+            head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
+        elif head_mask.dim() == 2:
+            head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)  # We can specify head_mask for each layer
+        if head_mask.dim() != 5:
+            raise ValueError(f"head_mask.dim != 5, instead {head_mask.dim()}")
+        head_mask = head_mask.to(dtype=self.dtype)  # switch to float if need + fp16 compatibility
+        return head_mask
 
     def get_extended_attention_mask(
         self,
@@ -850,7 +855,7 @@ class MplugOwlVisualAbstractorModel(PreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self.config.return_dict
         
         query_embeds = self.query_embeds.repeat(encoder_hidden_states.shape[0], 1, 1)
         embedding_output = query_embeds

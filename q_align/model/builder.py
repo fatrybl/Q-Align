@@ -17,11 +17,11 @@ import os
 import warnings
 import shutil
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
-from transformers.models.clip.image_processing_clip import CLIPImageProcessor
+from transformers import AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
+from transformers import CLIPImageProcessorPil
+from .tokenization_llama import LlamaTokenizer
 import torch
 from q_align.model import *
-from icecream import ic
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda"):
     kwargs = {"device_map": device_map}
 
@@ -39,16 +39,16 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             bnb_4bit_quant_type='nf4'
         )
     else:
-        kwargs['torch_dtype'] = torch.float16
+        kwargs['dtype'] = torch.float16
     if 'q-align' in model_name.lower():
         # Load LLaVA model
         if 'lora' in model_name.lower() and model_base is None:
             warnings.warn('There is `lora` in model name but no `model_base` is provided. If you are loading a LoRA model, please provide the `model_base` argument. Detailed instruction: https://github.com/haotian-liu/LLaVA#launch-a-model-worker-lora-weights-unmerged.')
         if 'lora' in model_name.lower() and model_base is not None:
             lora_cfg_pretrained = AutoConfig.from_pretrained(model_path)
-            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
+            tokenizer = LlamaTokenizer.from_pretrained(model_base)
             print('Loading mPLUG-Owl2 from base model...')
-            model = MPLUGOwl2LlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, **kwargs)
+            model = MPLUGOwl2LlamaForCausalLM.from_pretrained(model_base, config=lora_cfg_pretrained, **kwargs)
             token_num, tokem_dim = model.lm_head.out_features, model.lm_head.in_features
             if model.lm_head.weight.shape[0] != token_num:
                 model.lm_head.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
@@ -82,19 +82,19 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         elif model_base is not None:
             # this may be mm projector only
             print('Loading mPLUG-Owl2 from base model...')
-            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
+            tokenizer = LlamaTokenizer.from_pretrained(model_base)
             cfg_pretrained = AutoConfig.from_pretrained(model_path)
-            model = MPLUGOwl2LlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
+            model = MPLUGOwl2LlamaForCausalLM.from_pretrained(model_base, config=cfg_pretrained, **kwargs)
         else:
-            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-            model = MPLUGOwl2LlamaForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
+            tokenizer = LlamaTokenizer.from_pretrained(model_path)
+            model = MPLUGOwl2LlamaForCausalLM.from_pretrained(model_path, **kwargs)
     else:
         # Load language model
         if model_base is not None:
             # PEFT model
             from peft import PeftModel
-            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
-            model = AutoModelForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, **kwargs)
+            tokenizer = LlamaTokenizer.from_pretrained(model_base)
+            model = AutoModelForCausalLM.from_pretrained(model_base, **kwargs)
             print(f"Loading LoRA weights from {model_path}")
             model = PeftModel.from_pretrained(model, model_path)
             print(f"Merging weights")
@@ -102,14 +102,13 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             print('Convert to FP16...')
             model.to(torch.float16)
         else:
-            use_fast = False
-            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-            model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
+            tokenizer = LlamaTokenizer.from_pretrained(model_path)
+            model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs)
             
     #vision_tower = model.get_model().vision_model
     #print(vision_tower.device)
     #vision_tower.to(device=device, dtype=torch.float16)
-    image_processor = CLIPImageProcessor.from_pretrained(model_path)
+    image_processor = CLIPImageProcessorPil.from_pretrained(model_path)
 
     if hasattr(model.config, "max_sequence_length"):
         context_len = model.config.max_sequence_length

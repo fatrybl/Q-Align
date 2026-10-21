@@ -118,6 +118,7 @@ class LlamaConfig(PretrainedConfig):
         rope_scaling=None,
         attention_bias=False,
         attention_dropout=0.0,
+        mlp_bias=False,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -142,6 +143,8 @@ class LlamaConfig(PretrainedConfig):
         self._rope_scaling_validation()
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        # transformers 5's LlamaMLP reads it; 4.36's had bias-free projections.
+        self.mlp_bias = mlp_bias
 
         super().__init__(
             pad_token_id=pad_token_id,

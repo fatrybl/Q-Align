@@ -5,7 +5,6 @@ import base64
 import torch
 from transformers import StoppingCriteria
 from q_align.constants import IMAGE_TOKEN_INDEX,DEFAULT_IMAGE_TOKEN
-from icecream import ic
 
 
 def load_image_from_base64(image):
